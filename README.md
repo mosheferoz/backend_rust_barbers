@@ -9,7 +9,7 @@ This is a backend service built with Rust using the `firestore` crate (v0.47+).
 
 ## Configuration
 
-1. Set the `PROJECT_ID` environment variable. You can use a `.env` file (copy from `.env.example` if available, or just create one):
+1. Set the `PROJECT_ID` environment variable. You can use a local env file (see `env.example`):
    ```
    PROJECT_ID=your-project-id
    ```
@@ -36,6 +36,21 @@ cargo run
 ```
 
 The server will start on `http://127.0.0.1:8080`.
+
+## HTTPS (Production)
+
+הדרך המומלצת היא **לא** להוסיף TLS בתוך ה־Rust, אלא לסיים HTTPS ב־Nginx ולהעביר ל־Rust ב־HTTP על `127.0.0.1:8080`.
+
+- דוגמת קונפיג: `deploy/nginx_eventlyil.xyz.conf`
+- דוגמת systemd service: `deploy/rust_backend.service`
+
+### CORS (אם אתה קורא מהדפדפן)
+
+אם הלקוח הוא Web (ולא Mobile), צריך להגדיר CORS. יש תמיכה דרך env:
+
+```bash
+CORS_ALLOWED_ORIGINS=https://eventlyil.xyz,https://www.eventlyil.xyz
+```
 
 ## Endpoints
 

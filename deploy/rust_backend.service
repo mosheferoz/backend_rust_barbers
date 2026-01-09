@@ -1,0 +1,28 @@
+[Unit]
+Description=Rust Backend (Axum)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/backend_rust_barbers
+
+# Prefer a fixed binary path. If you deploy via git, adjust accordingly.
+ExecStart=/opt/backend_rust_barbers/target/release/rust_backend
+Restart=always
+RestartSec=2
+
+# Environment
+Environment=RUST_LOG=rust_backend=info,tower_http=info
+Environment=BIND_ADDR=127.0.0.1:8080
+# EnvironmentFile=/opt/backend_rust_barbers/.env
+
+# Hardening (safe defaults; adjust if needed)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/backend_rust_barbers
+
+[Install]
+WantedBy=multi-user.target
+

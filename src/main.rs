@@ -4,10 +4,12 @@ use axum::{
     Json, Router,
     middleware,
 };
+use axum::http::{header, HeaderValue, Method};
 use firestore::*;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, str::FromStr};
 use dotenv::dotenv;
+use tower_http::cors::{CorsLayer, Any};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod team;
@@ -75,11 +77,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_state(state);
 
     // Merge routes
+    let cors = build_cors_layer_from_env();
+
     let app = Router::new()
         .merge(public_routes)
-        .merge(api_routes);
+        .merge(api_routes)
+        .layer(cors);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let addr = bind_addr_from_env().unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8080)));
     println!("Server listening on {}", addr);
     
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -155,4 +160,41 @@ async fn get_barber(
         .unwrap();
 
     Json(barber)
+}
+
+fn bind_addr_from_env() -> Option<SocketAddr> {
+    let raw = std::env::var("BIND_ADDR").ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    SocketAddr::from_str(raw).ok()
+}
+
+fn build_cors_layer_from_env() -> CorsLayer {
+    // Defaults are permissive to avoid breaking local/dev.
+    // In production set CORS_ALLOWED_ORIGINS to a comma-separated list of exact origins:
+    // e.g. "https://eventlyil.xyz,https://www.eventlyil.xyz,http://localhost:5173"
+    let cors = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]);
+
+    let origins = std::env::var("CORS_ALLOWED_ORIGINS").ok();
+    match origins.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(list) => {
+            let allowed: Vec<HeaderValue> = list
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| HeaderValue::from_str(s).ok())
+                .collect();
+
+            if allowed.is_empty() {
+                cors.allow_origin(Any)
+            } else {
+                cors.allow_origin(allowed)
+            }
+        }
+        None => cors.allow_origin(Any),
+    }
 }
