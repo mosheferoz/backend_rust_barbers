@@ -5,14 +5,15 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use jsonwebtoken::{decode, decode_header, DecodingKey, Validation, Algorithm};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use reqwest::Client;
 
 // Google's public keys URL for Firebase Auth
-const GOOGLE_PUBLIC_KEYS_URL: &str = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
+const GOOGLE_PUBLIC_KEYS_URL: &str =
+    "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
@@ -25,7 +26,7 @@ pub struct Claims {
     // We'll alias uid to sub in logic if needed or just use sub.
     // However, if we want to use 'uid' field name in our struct for clarity, we can use serde alias if 'sub' is the source.
     // But 'sub' is the field name in JWT. So let's just use 'sub'.
-    #[serde(alias = "user_id")] 
+    #[serde(alias = "user_id")]
     pub user_id: Option<String>, // Sometimes present
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -46,8 +47,15 @@ lazy_static::lazy_static! {
 
 async fn fetch_google_public_keys() -> Result<HashMap<String, String>, String> {
     let client = Client::new();
-    let resp = client.get(GOOGLE_PUBLIC_KEYS_URL).send().await.map_err(|e| e.to_string())?;
-    let keys = resp.json::<HashMap<String, String>>().await.map_err(|e| e.to_string())?;
+    let resp = client
+        .get(GOOGLE_PUBLIC_KEYS_URL)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let keys = resp
+        .json::<HashMap<String, String>>()
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(keys)
 }
 
@@ -81,14 +89,16 @@ pub async fn auth_middleware(
     let (mut parts, body) = request.into_parts();
 
     // Extract Bearer token manually
-    let auth_header = parts.headers.get("Authorization")
+    let auth_header = parts
+        .headers
+        .get("Authorization")
         .and_then(|h| h.to_str().ok())
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    
+
     if !auth_header.starts_with("Bearer ") {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    
+
     let token = &auth_header[7..];
 
     // Decode header to get kid
@@ -105,7 +115,7 @@ pub async fn auth_middleware(
     let project_id = std::env::var("PROJECT_ID").unwrap_or_default();
     let mut validation = Validation::new(Algorithm::RS256);
     validation.set_audience(&[project_id]);
-    
+
     let token_data = decode::<Claims>(token, &decoding_key, &validation).map_err(|e| {
         eprintln!("Token validation failed: {}", e);
         StatusCode::UNAUTHORIZED
@@ -138,10 +148,10 @@ where
 // Helper to check permissions
 impl Claims {
     pub fn has_permission(&self, permission: &str) -> bool {
-         if let Some(val) = self.extra.get(permission) {
-             val.as_bool().unwrap_or(false)
-         } else {
-             false
-         }
+        if let Some(val) = self.extra.get(permission) {
+            val.as_bool().unwrap_or(false)
+        } else {
+            false
+        }
     }
 }

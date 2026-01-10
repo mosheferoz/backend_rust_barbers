@@ -1,13 +1,13 @@
+use crate::auth::Claims;
+use crate::AppState;
 use axum::{
-    extract::{State, Json},
-    response::IntoResponse,
+    extract::{Json, State},
     http::StatusCode,
+    response::IntoResponse,
 };
 use firestore::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::AppState;
-use crate::auth::Claims;
 
 #[derive(Debug, Deserialize)]
 pub struct UpdatePermissionsRequest {
@@ -49,9 +49,11 @@ async fn check_manage_team_permission(claims: &Claims, state: &AppState) -> bool
 
     // 2. Check if user is owner in their barber profile
     let uid = claims.uid();
-    
+
     // Check if there is a barber profile with this ID (if they are a barber)
-    let barber_profile: FirestoreResult<Option<serde_json::Value>> = state.db.fluent()
+    let barber_profile: FirestoreResult<Option<serde_json::Value>> = state
+        .db
+        .fluent()
         .select()
         .by_id_in("barbers")
         .obj()
@@ -66,12 +68,13 @@ async fn check_manage_team_permission(claims: &Claims, state: &AppState) -> bool
             }
         }
         if let Some(role) = profile.get("role").and_then(|v| v.as_str()) {
-            if role == "owner" || role == "admin" || role == "manager" { // Managers also can manage team
+            if role == "owner" || role == "admin" || role == "manager" {
+                // Managers also can manage team
                 return true;
             }
         }
     }
-    
+
     false
 }
 
@@ -81,15 +84,21 @@ pub async fn update_permissions(
     Json(payload): Json<UpdatePermissionsRequest>,
 ) -> impl IntoResponse {
     if !check_manage_team_permission(&claims, &state).await {
-        return (StatusCode::FORBIDDEN, Json(GenericResponse { 
-            success: false, 
-            message: Some("Permission denied: requires manageTeam".to_string()) 
-        })).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(GenericResponse {
+                success: false,
+                message: Some("Permission denied: requires manageTeam".to_string()),
+            }),
+        )
+            .into_response();
     }
 
     const COLLECTION_NAME: &str = "barbers";
-    
-    let doc_result: FirestoreResult<Option<serde_json::Value>> = state.db.fluent()
+
+    let doc_result: FirestoreResult<Option<serde_json::Value>> = state
+        .db
+        .fluent()
         .select()
         .by_id_in(COLLECTION_NAME)
         .obj()
@@ -99,10 +108,15 @@ pub async fn update_permissions(
     match doc_result {
         Ok(Some(mut doc)) => {
             if let Some(obj) = doc.as_object_mut() {
-                obj.insert("permissions".to_string(), serde_json::to_value(&payload.permissions).unwrap());
+                obj.insert(
+                    "permissions".to_string(),
+                    serde_json::to_value(&payload.permissions).unwrap(),
+                );
             }
 
-            let update_result = state.db.fluent()
+            let update_result = state
+                .db
+                .fluent()
                 .update()
                 .in_col(COLLECTION_NAME)
                 .document_id(&payload.member_id)
@@ -111,17 +125,42 @@ pub async fn update_permissions(
                 .await;
 
             match update_result {
-                Ok(_) => Json(GenericResponse { success: true, message: None }).into_response(),
+                Ok(_) => Json(GenericResponse {
+                    success: true,
+                    message: None,
+                })
+                .into_response(),
                 Err(e) => {
                     eprintln!("Error saving updated permissions: {}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(GenericResponse { success: false, message: Some(e.to_string()) })).into_response()
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(GenericResponse {
+                            success: false,
+                            message: Some(e.to_string()),
+                        }),
+                    )
+                        .into_response()
                 }
             }
-        },
-        Ok(None) => (StatusCode::NOT_FOUND, Json(GenericResponse { success: false, message: Some("Member not found".to_string()) })).into_response(),
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(GenericResponse {
+                success: false,
+                message: Some("Member not found".to_string()),
+            }),
+        )
+            .into_response(),
         Err(e) => {
             eprintln!("Error fetching member: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(GenericResponse { success: false, message: Some(e.to_string()) })).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(GenericResponse {
+                    success: false,
+                    message: Some(e.to_string()),
+                }),
+            )
+                .into_response()
         }
     }
 }
@@ -132,15 +171,21 @@ pub async fn delete_member(
     Json(payload): Json<DeleteMemberRequest>,
 ) -> impl IntoResponse {
     if !check_manage_team_permission(&claims, &state).await {
-        return (StatusCode::FORBIDDEN, Json(GenericResponse { 
-            success: false, 
-            message: Some("Permission denied: requires manageTeam".to_string()) 
-        })).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(GenericResponse {
+                success: false,
+                message: Some("Permission denied: requires manageTeam".to_string()),
+            }),
+        )
+            .into_response();
     }
 
     const COLLECTION_NAME: &str = "barbers";
 
-    let result = state.db.fluent()
+    let result = state
+        .db
+        .fluent()
         .delete()
         .from(COLLECTION_NAME)
         .document_id(&payload.member_id)
@@ -148,10 +193,21 @@ pub async fn delete_member(
         .await;
 
     match result {
-        Ok(_) => Json(GenericResponse { success: true, message: None }).into_response(),
+        Ok(_) => Json(GenericResponse {
+            success: true,
+            message: None,
+        })
+        .into_response(),
         Err(e) => {
             eprintln!("Error deleting member: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(GenericResponse { success: false, message: Some(e.to_string()) })).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(GenericResponse {
+                    success: false,
+                    message: Some(e.to_string()),
+                }),
+            )
+                .into_response()
         }
     }
 }
@@ -163,19 +219,23 @@ pub async fn add_team_member(
 ) -> impl IntoResponse {
     // Check permission with fallback
     if !check_manage_team_permission(&claims, &state).await {
-        return (StatusCode::FORBIDDEN, Json(GenericResponse { 
-            success: false, 
-            message: Some("Permission denied: requires manageTeam".to_string()) 
-        })).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(GenericResponse {
+                success: false,
+                message: Some("Permission denied: requires manageTeam".to_string()),
+            }),
+        )
+            .into_response();
     }
 
     // Lookup user by email in 'users' collection using simple filter
-    let users_stream: futures::stream::BoxStream<FirestoreResult<serde_json::Value>> = state.db.fluent()
+    let users_stream: futures::stream::BoxStream<FirestoreResult<serde_json::Value>> = state
+        .db
+        .fluent()
         .select()
         .from("users")
-        .filter(|q| q.for_all([
-            q.field("email").eq(payload.email.clone())
-        ]))
+        .filter(|q| q.for_all([q.field("email").eq(payload.email.clone())]))
         .obj()
         .stream_query_with_errors()
         .await
@@ -188,26 +248,50 @@ pub async fn add_team_member(
         .await;
 
     let user_option = users.pop();
-    
+
     let new_member_id = if let Some(user) = &user_option {
-        user.get("uid").or(user.get("userId")).and_then(|v| v.as_str()).map(|s| s.to_string())
+        user.get("uid")
+            .or(user.get("userId"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
     } else {
         uuid::Uuid::new_v4().to_string()
     };
-    
+
     // Create BarberStruct-like object
     let mut barber_profile = serde_json::Map::new();
-    barber_profile.insert("id".to_string(), serde_json::Value::String(new_member_id.clone()));
+    barber_profile.insert(
+        "id".to_string(),
+        serde_json::Value::String(new_member_id.clone()),
+    );
     barber_profile.insert("name".to_string(), serde_json::Value::String(payload.name));
-    barber_profile.insert("email".to_string(), serde_json::Value::String(payload.email));
-    barber_profile.insert("phone".to_string(), serde_json::Value::String(payload.phone));
+    barber_profile.insert(
+        "email".to_string(),
+        serde_json::Value::String(payload.email),
+    );
+    barber_profile.insert(
+        "phone".to_string(),
+        serde_json::Value::String(payload.phone),
+    );
     // For barber profile, we keep the Hebrew role as it is displayed in UI
-    barber_profile.insert("role".to_string(), serde_json::Value::String(payload.role.clone()));
-    barber_profile.insert("permissions".to_string(), serde_json::to_value(&payload.permissions).unwrap());
-    barber_profile.insert("ownerId".to_string(), serde_json::Value::String(claims.uid().to_string())); 
-    barber_profile.insert("status".to_string(), serde_json::Value::String("active".to_string()));
-    
+    barber_profile.insert(
+        "role".to_string(),
+        serde_json::Value::String(payload.role.clone()),
+    );
+    barber_profile.insert(
+        "permissions".to_string(),
+        serde_json::to_value(&payload.permissions).unwrap(),
+    );
+    barber_profile.insert(
+        "ownerId".to_string(),
+        serde_json::Value::String(claims.uid().to_string()),
+    );
+    barber_profile.insert(
+        "status".to_string(),
+        serde_json::Value::String("active".to_string()),
+    );
+
     if let Some(desc) = payload.bio {
         barber_profile.insert("description".to_string(), serde_json::Value::String(desc));
     }
@@ -216,17 +300,26 @@ pub async fn add_team_member(
     }
 
     // Save to 'barbers' collection
-    let save_result = state.db.fluent()
+    let save_result = state
+        .db
+        .fluent()
         .update()
         .in_col("barbers")
         .document_id(&new_member_id)
         .object(&serde_json::Value::Object(barber_profile))
         .execute::<()>()
         .await;
-        
+
     if let Err(e) = save_result {
-         eprintln!("Error saving barber profile: {}", e);
-         return (StatusCode::INTERNAL_SERVER_ERROR, Json(GenericResponse { success: false, message: Some(e.to_string()) })).into_response();
+        eprintln!("Error saving barber profile: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(GenericResponse {
+                success: false,
+                message: Some(e.to_string()),
+            }),
+        )
+            .into_response();
     }
 
     if let Some(_user) = user_option {
@@ -238,25 +331,46 @@ pub async fn add_team_member(
         };
 
         let mut user_update = serde_json::Map::new();
-        user_update.insert("type".to_string(), serde_json::Value::String("employee".to_string()));
+        user_update.insert(
+            "type".to_string(),
+            serde_json::Value::String("employee".to_string()),
+        );
         // Update user role as requested
-        user_update.insert("role".to_string(), serde_json::Value::String(system_role.to_string()));
-        user_update.insert("barberProfileId".to_string(), serde_json::Value::String(new_member_id.clone()));
-        user_update.insert("barberStatus".to_string(), serde_json::Value::String("active".to_string()));
-        user_update.insert("ownerId".to_string(), serde_json::Value::String(claims.uid().to_string()));
+        user_update.insert(
+            "role".to_string(),
+            serde_json::Value::String(system_role.to_string()),
+        );
+        user_update.insert(
+            "barberProfileId".to_string(),
+            serde_json::Value::String(new_member_id.clone()),
+        );
+        user_update.insert(
+            "barberStatus".to_string(),
+            serde_json::Value::String("active".to_string()),
+        );
+        user_update.insert(
+            "ownerId".to_string(),
+            serde_json::Value::String(claims.uid().to_string()),
+        );
 
-        let user_update_result = state.db.fluent()
+        let user_update_result = state
+            .db
+            .fluent()
             .update()
             .in_col("users")
             .document_id(&new_member_id)
             .object(&serde_json::Value::Object(user_update))
             .execute::<()>()
             .await;
-            
+
         if let Err(e) = user_update_result {
-             eprintln!("Error linking user profile: {}", e);
+            eprintln!("Error linking user profile: {}", e);
         }
     }
 
-    Json(GenericResponse { success: true, message: None }).into_response()
+    Json(GenericResponse {
+        success: true,
+        message: None,
+    })
+    .into_response()
 }

@@ -1,20 +1,20 @@
-use axum::{
-    extract::{State, Path},
-    routing::{get, post, delete},
-    Json, Router,
-    middleware,
-};
 use axum::http::{header, HeaderValue, Method};
+use axum::{
+    extract::{Path, State},
+    middleware,
+    routing::{delete, get, post},
+    Json, Router,
+};
+use dotenv::dotenv;
 use firestore::*;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, str::FromStr};
-use dotenv::dotenv;
-use tower_http::cors::{CorsLayer, Any};
+use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-mod team;
-mod reminders;
 mod auth;
+mod reminders;
+mod team;
 
 // מבנה נתונים לדוגמה - ספר
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let addr = bind_addr_from_env().unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8080)));
     println!("Server listening on {}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 
@@ -100,9 +100,11 @@ async fn health_check() -> &'static str {
 // שליפת רשימת ספרים
 async fn list_barbers(State(state): State<AppState>) -> Json<Vec<Barber>> {
     const COLLECTION_NAME: &str = "barbers";
-    
+
     // שימוש ב-Fluent API כפי שהתבקש
-    let barbers_stream: futures::stream::BoxStream<FirestoreResult<Barber>> = state.db.fluent()
+    let barbers_stream: futures::stream::BoxStream<FirestoreResult<Barber>> = state
+        .db
+        .fluent()
         .select()
         .from(COLLECTION_NAME)
         .obj()
@@ -120,18 +122,20 @@ async fn list_barbers(State(state): State<AppState>) -> Json<Vec<Barber>> {
 }
 
 // יצירת ספר חדש
-async fn create_barber(
-    State(state): State<AppState>,
-    Json(payload): Json<Barber>,
-) -> Json<Barber> {
+async fn create_barber(State(state): State<AppState>, Json(payload): Json<Barber>) -> Json<Barber> {
     const COLLECTION_NAME: &str = "barbers";
 
     // אם אין ID, ניצור אחד או ניתן לפיירסטור ליצור (כאן אנחנו מצפים ל-ID או יוצרים רנדומלי אם נרצה)
     // בדוגמה זו נשתמש ב-update כדי ליצור או לעדכן, או insert אם יש ID
-    
-    let document_id = payload.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    
-    let _saved_barber: Barber = state.db.fluent()
+
+    let document_id = payload
+        .id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let _saved_barber: Barber = state
+        .db
+        .fluent()
         .insert()
         .into(COLLECTION_NAME)
         .document_id(&document_id)
@@ -145,13 +149,12 @@ async fn create_barber(
 }
 
 // קבלת ספר לפי מזהה
-async fn get_barber(
-    Path(id): Path<String>,
-    State(state): State<AppState>,
-) -> Json<Option<Barber>> {
+async fn get_barber(Path(id): Path<String>, State(state): State<AppState>) -> Json<Option<Barber>> {
     const COLLECTION_NAME: &str = "barbers";
 
-    let barber: Option<Barber> = state.db.fluent()
+    let barber: Option<Barber> = state
+        .db
+        .fluent()
         .select()
         .by_id_in(COLLECTION_NAME)
         .obj()
