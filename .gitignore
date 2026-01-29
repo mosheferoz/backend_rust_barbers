@@ -28,6 +28,7 @@ target
 **/*serviceAccount*.json
 **/*firebase-adminsdk*.json
 **/*adminsdk*.json
+service-account-key.json
 
 # Local config
 config/local*.toml
