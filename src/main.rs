@@ -37,6 +37,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db = FirestoreDb::new(&project_id).await?;
     let state = AppState { db };
 
+    // Start reminder scheduler (runs every 60 seconds, sends due SMS from scheduled_reminders)
+    tokio::spawn(reminders::start_reminder_scheduler(state.clone()));
+
     // Protected routes (require authentication)
     let api_routes = Router::new()
         .route("/team/update-permissions", post(team::update_permissions))

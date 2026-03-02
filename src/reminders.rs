@@ -4,8 +4,13 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use chrono::{DateTime, Utc};
+use chrono_tz::Asia::Jerusalem;
+use firestore::*;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
+use std::time::Duration;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 // Colored logging helpers
@@ -71,8 +76,10 @@ fn log_field(name: &str, value: &str) {
 pub struct ReminderConfig {
     pub enabled: Option<bool>,
     pub immediate_reminder: Option<bool>,
-    pub reminder_before_time: Option<String>, // e.g., "15m", "1h", "24h"
-    pub remind_at: Option<String>,            // ISO8601 datetime
+    #[allow(dead_code)]
+    pub reminder_before_time: Option<String>, // e.g., "15m", "1h", "24h" - kept for API compat
+    #[allow(dead_code)]
+    pub remind_at: Option<String>, // ISO8601 datetime - kept for API compat
     #[serde(rename = "type")]
     pub reminder_type: String, // "sms" or "push"
 }
@@ -84,7 +91,8 @@ pub struct ScheduleReminderRequest {
     pub appointment_time: String, // ISO8601
     pub barber_name: String,
     pub message: Option<String>,
-    pub reminder_before_minutes: Option<i32>,
+    #[allow(dead_code)]
+    pub reminder_before_minutes: Option<i32>, // kept for API compat, scheduling now in scheduler
     pub send_immediate: Option<bool>,
     pub reminders: Option<Vec<ReminderConfig>>, // Array of reminder configurations
 }
@@ -317,78 +325,6 @@ async fn send_pulseem_sms(
     })
 }
 
-// Helper function to check if a scheduled time has already passed (using Israel timezone)
-fn is_time_in_past(send_time_iso: &str) -> bool {
-    use chrono::{DateTime, Utc};
-    use chrono_tz::Asia::Jerusalem;
-
-    // Get current time in Israel
-    let now_israel = Utc::now().with_timezone(&Jerusalem);
-
-    // Parse the send time
-    match send_time_iso.parse::<DateTime<Utc>>() {
-        Ok(send_time_utc) => {
-            let send_time_israel = send_time_utc.with_timezone(&Jerusalem);
-            let is_past = send_time_israel <= now_israel;
-
-            if is_past {
-                log_warning(&format!(
-                    "Time {} (Israel) has already passed (now: {})",
-                    send_time_israel.format("%Y-%m-%d %H:%M:%S"),
-                    now_israel.format("%Y-%m-%d %H:%M:%S")
-                ));
-            }
-
-            is_past
-        }
-        Err(_) => {
-            // If we can't parse, assume it's valid and let Pulseem handle it
-            false
-        }
-    }
-}
-
-// Helper function to parse reminder time (e.g., "15m", "1h", "24h") to minutes
-fn parse_reminder_time(reminder_time: &str) -> Option<i32> {
-    let reminder_time = reminder_time.trim().to_lowercase();
-
-    if reminder_time.ends_with('m') {
-        reminder_time[..reminder_time.len() - 1].parse::<i32>().ok()
-    } else if reminder_time.ends_with('h') {
-        reminder_time[..reminder_time.len() - 1]
-            .parse::<i32>()
-            .ok()
-            .map(|h| h * 60)
-    } else if reminder_time.ends_with('d') {
-        reminder_time[..reminder_time.len() - 1]
-            .parse::<i32>()
-            .ok()
-            .map(|d| d * 24 * 60)
-    } else {
-        // Try to parse as minutes directly
-        reminder_time.parse::<i32>().ok()
-    }
-}
-
-// Helper function to calculate reminder time from appointment time and reminder_before_time
-fn calculate_reminder_time(appointment_time: &str, reminder_before_time: &str) -> Option<String> {
-    use chrono::{DateTime, Duration};
-
-    let appointment = DateTime::parse_from_rfc3339(appointment_time)
-        .or_else(|_| {
-            // Try ISO8601 format
-            appointment_time
-                .parse::<DateTime<chrono::Utc>>()
-                .map(|dt| dt.with_timezone(&chrono::FixedOffset::east_opt(0).unwrap()))
-        })
-        .ok()?;
-
-    let minutes = parse_reminder_time(reminder_before_time)?;
-    let reminder_time = appointment - Duration::minutes(minutes as i64);
-
-    Some(reminder_time.to_rfc3339())
-}
-
 pub async fn schedule_reminder(
     State(state): State<AppState>,
     Json(payload): Json<ScheduleReminderRequest>,
@@ -456,90 +392,8 @@ pub async fn schedule_reminder(
                     }
                 }
 
-                // Scheduled reminder (before appointment)
-                if let Some(reminder_before_time) = reminder.reminder_before_time.as_deref() {
-                    if let Some(send_time) =
-                        calculate_reminder_time(&payload.appointment_time, &reminder_before_time)
-                    {
-                        log_info(&format!(
-                            "Reminder: scheduled SMS (offset: {})",
-                            reminder_before_time
-                        ));
-                        log_field("Send time:", &send_time);
-
-                        // Check if the scheduled time has already passed
-                        if is_time_in_past(&send_time) {
-                            log_skip("Scheduled time already passed");
-                        } else {
-                            match send_pulseem_sms(
-                                &api_key,
-                                payload.phone_number.clone(),
-                                message.to_string(),
-                                Some(send_time),
-                            )
-                            .await
-                            {
-                                Ok(result) => {
-                                    if result.sent_successfully {
-                                        log_success(&format!(
-                                            "Scheduled. send_id={}",
-                                            result.send_id
-                                        ));
-                                    } else {
-                                        log_error(&format!(
-                                            "Failed. send_id={}, error: {:?}",
-                                            result.send_id, result.error_message
-                                        ));
-                                    }
-                                    scheduled_reminder_ids.push(result.send_id);
-                                }
-                                Err(e) => {
-                                    log_error(&format!("Scheduled SMS failed: {}", e));
-                                }
-                            }
-                        }
-                    } else {
-                        log_error(&format!(
-                            "Could not calculate reminder time (offset: {}).",
-                            reminder_before_time
-                        ));
-                    }
-                }
-
-                // Scheduled reminder (at specific time)
-                if let Some(remind_at) = reminder.remind_at.as_deref() {
-                    log_info("Reminder: scheduled SMS (absolute time)");
-                    log_field("Send time:", remind_at);
-
-                    // Check if the scheduled time has already passed
-                    if is_time_in_past(remind_at) {
-                        log_skip("Scheduled time already passed");
-                    } else {
-                        match send_pulseem_sms(
-                            &api_key,
-                            payload.phone_number.clone(),
-                            message.to_string(),
-                            Some(remind_at.to_string()),
-                        )
-                        .await
-                        {
-                            Ok(result) => {
-                                if result.sent_successfully {
-                                    log_success(&format!("Scheduled. send_id={}", result.send_id));
-                                } else {
-                                    log_error(&format!(
-                                        "Failed. send_id={}, error: {:?}",
-                                        result.send_id, result.error_message
-                                    ));
-                                }
-                                scheduled_reminder_ids.push(result.send_id);
-                            }
-                            Err(e) => {
-                                log_error(&format!("Future scheduled SMS failed: {}", e));
-                            }
-                        }
-                    }
-                }
+                // Scheduled reminders (reminder_before_time, remind_at) are now handled
+                // by the Rust scheduler via scheduled_reminders collection
             }
         }
     } else {
@@ -572,59 +426,7 @@ pub async fn schedule_reminder(
             }
         }
 
-        if let Some(reminder_before_minutes) = payload.reminder_before_minutes {
-            // Calculate send time
-            use chrono::{DateTime, Duration, Utc};
-            if let Ok(appointment) = payload.appointment_time.parse::<DateTime<Utc>>() {
-                let reminder_time = appointment - Duration::minutes(reminder_before_minutes as i64);
-                let send_time = reminder_time.to_rfc3339();
-
-                // Convert minutes to human readable format
-                let time_str = if reminder_before_minutes >= 1440 {
-                    format!("{}h", reminder_before_minutes / 60)
-                } else if reminder_before_minutes >= 60 {
-                    format!("{}h", reminder_before_minutes / 60)
-                } else {
-                    format!("{}m", reminder_before_minutes)
-                };
-                log_info(&format!("Scheduling SMS ({} before)", time_str));
-                log_field("Send time:", &send_time);
-
-                // Check if the scheduled time has already passed
-                if is_time_in_past(&send_time) {
-                    log_skip("Scheduled time already passed (immediate message was sent)");
-                } else {
-                    match send_pulseem_sms(
-                        &api_key,
-                        payload.phone_number.clone(),
-                        message.to_string(),
-                        Some(send_time),
-                    )
-                    .await
-                    {
-                        Ok(result) => {
-                            if result.sent_successfully {
-                                log_success(&format!("Scheduled. send_id={}", result.send_id));
-                            } else {
-                                log_error(&format!(
-                                    "Failed. send_id={}, error: {:?}",
-                                    result.send_id, result.error_message
-                                ));
-                            }
-                            scheduled_reminder_ids.push(result.send_id);
-                        }
-                        Err(e) => {
-                            log_error(&format!("Scheduled SMS failed: {}", e));
-                        }
-                    }
-                }
-            } else {
-                log_error(&format!(
-                    "Failed to parse appointment time: {}",
-                    payload.appointment_time
-                ));
-            }
-        }
+        // Scheduled SMS (reminder_before_minutes) is now handled by the scheduler
     }
 
     // Save reminder to Firestore for tracking
@@ -675,13 +477,218 @@ pub async fn schedule_reminder(
     )
 }
 
+/// Background scheduler: runs every 60 seconds, queries scheduled_reminders,
+/// sends immediate SMS for due reminders if booking status != "cancelled".
+pub async fn start_reminder_scheduler(state: AppState) {
+    log_info("Reminder scheduler started (runs every 60 seconds)");
+    let mut interval = tokio::time::interval(Duration::from_secs(60));
+    interval.tick().await; // First tick completes immediately, skip
+
+    loop {
+        interval.tick().await;
+
+        let now_run = Utc::now().with_timezone(&Jerusalem);
+        log_info(&format!(
+            "[Scheduler] Run at {} (Israel) - checking scheduled_reminders",
+            now_run.format("%Y-%m-%d %H:%M:%S")
+        ));
+
+        let api_key = match std::env::var("PULSEEM_API_KEY") {
+            Ok(k) if !k.is_empty() => k,
+            _ => {
+                log_warning("PULSEEM_API_KEY not set, skipping scheduler run");
+                continue;
+            }
+        };
+
+        let now_utc = Utc::now();
+        let now_israel = now_utc.with_timezone(&Jerusalem);
+        let now_plus_one_min = now_utc + chrono::Duration::minutes(1);
+
+        // Query scheduled_reminders: status=pending, type=sms
+        let stream: futures::stream::BoxStream<FirestoreResult<serde_json::Value>> = match state
+            .db
+            .fluent()
+            .select()
+            .from("scheduled_reminders")
+            .filter(|q| {
+                q.for_all([
+                    q.field("status").eq("pending"),
+                    q.field("type").eq("sms"),
+                ])
+            })
+            .obj()
+            .stream_query_with_errors()
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                log_error(&format!("Scheduler query failed: {}", e));
+                continue;
+            }
+        };
+
+        let docs: Vec<serde_json::Value> = stream
+            .filter_map(|res| futures::future::ready(res.ok()))
+            .collect()
+            .await;
+
+        log_info(&format!(
+            "[Scheduler] Query returned {} pending SMS reminders",
+            docs.len()
+        ));
+
+        let mut due_count = 0;
+        for doc in &docs {
+            let doc_map = match doc.as_object() {
+                Some(m) => m,
+                None => continue,
+            };
+            let scheduled_send_time = doc_map
+                .get("scheduledSendTime")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if let Ok(send_time_utc) = scheduled_send_time.parse::<DateTime<Utc>>() {
+                if send_time_utc <= now_plus_one_min
+                    && send_time_utc >= now_utc - chrono::Duration::minutes(2)
+                {
+                    due_count += 1;
+                }
+            }
+        }
+        if due_count > 0 {
+            log_info(&format!("[Scheduler] {} reminders due for sending", due_count));
+        }
+
+        for doc in docs {
+            let doc_map = match doc.as_object() {
+                Some(m) => m,
+                None => continue,
+            };
+
+            let scheduled_send_time = doc_map
+                .get("scheduledSendTime")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let doc_id = doc_map.get("id").and_then(|v| v.as_str());
+
+            // Parse scheduled time - must be due (<= now + 1 min)
+            let send_time_utc: DateTime<Utc> = match scheduled_send_time.parse() {
+                Ok(dt) => dt,
+                Err(_) => continue,
+            };
+
+            if send_time_utc > now_plus_one_min {
+                continue; // Not yet due
+            }
+            if send_time_utc < now_utc - chrono::Duration::minutes(2) {
+                continue; // Too old, might have been missed - skip to avoid duplicates
+            }
+
+            let booking_id = doc_map
+                .get("bookingId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let phone = doc_map
+                .get("phoneNumber")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let message = doc_map
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if booking_id.is_empty() || phone.is_empty() {
+                continue;
+            }
+
+            // Check booking status
+            let booking: FirestoreResult<Option<serde_json::Value>> = state
+                .db
+                .fluent()
+                .select()
+                .by_id_in("bookings")
+                .obj()
+                .one(booking_id)
+                .await;
+
+            let status = booking
+                .ok()
+                .flatten()
+                .and_then(|b| b.get("status").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .unwrap_or_default();
+
+            if status == "cancelled" {
+                log_skip(&format!(
+                    "Booking {} cancelled, skipping reminder",
+                    booking_id
+                ));
+                continue;
+            }
+
+            log_info(&format!(
+                "Scheduler: sending SMS for booking {} (due {})",
+                booking_id,
+                now_israel.format("%Y-%m-%d %H:%M")
+            ));
+
+            match send_pulseem_sms(&api_key, phone.to_string(), message.to_string(), None).await
+            {
+                Ok(result) => {
+                    if result.sent_successfully {
+                        log_success(&format!("SMS sent for booking {}", booking_id));
+                        if let Some(id) = doc_id {
+                            let mut updated = doc.clone();
+                            if let Some(obj) = updated.as_object_mut() {
+                                obj.insert(
+                                    "status".to_string(),
+                                    serde_json::Value::String("sent".to_string()),
+                                );
+                                obj.insert(
+                                    "sentAt".to_string(),
+                                    serde_json::Value::String(
+                                        chrono::Utc::now().to_rfc3339(),
+                                    ),
+                                );
+                                if let Err(e) = state
+                                    .db
+                                    .fluent()
+                                    .update()
+                                    .in_col("scheduled_reminders")
+                                    .document_id(id)
+                                    .object(&updated)
+                                    .execute::<serde_json::Value>()
+                                    .await
+                                {
+                                    log_warning(&format!(
+                                        "Failed to update scheduled_reminder {}: {}",
+                                        id, e
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        log_error(&format!(
+                            "SMS failed for booking {}: {:?}",
+                            booking_id, result.error_message
+                        ));
+                    }
+                }
+                Err(e) => {
+                    log_error(&format!("SMS send error for booking {}: {}", booking_id, e));
+                }
+            }
+        }
+    }
+}
+
 pub async fn cancel_reminder(
     Path(id): Path<String>,
     State(_state): State<AppState>,
 ) -> impl IntoResponse {
     log_info(&format!("Received cancel reminder request. id={}", id));
 
-    // TODO: Implement actual cancellation logic
+    // Cancellation is now handled via scheduled_reminders status (Flutter updates on cancel)
 
     StatusCode::NO_CONTENT
 }
