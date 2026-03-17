@@ -1,3 +1,4 @@
+use crate::fcm;
 use crate::AppState;
 use axum::{
     extract::{Json, Path, State},
@@ -493,47 +494,41 @@ pub async fn start_reminder_scheduler(state: AppState) {
             now_run.format("%Y-%m-%d %H:%M:%S")
         ));
 
-        let api_key = match std::env::var("PULSEEM_API_KEY") {
-            Ok(k) if !k.is_empty() => k,
-            _ => {
-                log_warning("PULSEEM_API_KEY not set, skipping scheduler run");
-                continue;
-            }
-        };
+        let api_key = std::env::var("PULSEEM_API_KEY").ok();
+        let project_id = std::env::var("PROJECT_ID").ok();
 
         let now_utc = Utc::now();
         let now_israel = now_utc.with_timezone(&Jerusalem);
         let now_plus_one_min = now_utc + chrono::Duration::minutes(1);
 
-        // Query scheduled_reminders: status=pending, type=sms
-        let stream: futures::stream::BoxStream<FirestoreResult<serde_json::Value>> = match state
-            .db
-            .fluent()
-            .select()
-            .from("scheduled_reminders")
-            .filter(|q| {
-                q.for_all([
-                    q.field("status").eq("pending"),
-                    q.field("type").eq("sms"),
-                ])
-            })
-            .obj()
-            .stream_query_with_errors()
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                log_error(&format!("Scheduler query failed: {}", e));
-                continue;
-            }
-        };
+        // --- SMS reminders ---
+        if let Some(ref api_key) = api_key {
+            let docs: Vec<serde_json::Value> = match state
+                .db
+                .fluent()
+                .select()
+                .from("scheduled_reminders")
+                .filter(|q| {
+                    q.for_all([
+                        q.field("status").eq("pending"),
+                        q.field("type").eq("sms"),
+                    ])
+                })
+                .obj()
+                .stream_query_with_errors()
+                .await
+            {
+                Ok(stream) => stream
+                    .filter_map(|res| futures::future::ready(res.ok()))
+                    .collect()
+                    .await,
+                Err(e) => {
+                    log_error(&format!("Scheduler SMS query failed: {}", e));
+                    Vec::new()
+                }
+            };
 
-        let docs: Vec<serde_json::Value> = stream
-            .filter_map(|res| futures::future::ready(res.ok()))
-            .collect()
-            .await;
-
-        log_info(&format!(
+            log_info(&format!(
             "[Scheduler] Query returned {} pending SMS reminders",
             docs.len()
         ));
@@ -678,6 +673,232 @@ pub async fn start_reminder_scheduler(state: AppState) {
                     log_error(&format!("SMS send error for booking {}: {}", booking_id, e));
                 }
             }
+        }
+        }
+
+        // --- Push reminders (customer) ---
+        if let Some(ref project_id) = project_id {
+            let push_docs: Vec<serde_json::Value> = match state
+                .db
+                .fluent()
+                .select()
+                .from("scheduled_reminders")
+                .filter(|q| {
+                    q.for_all([
+                        q.field("status").eq("pending"),
+                        q.field("type").eq("push"),
+                    ])
+                })
+                .obj()
+                .stream_query_with_errors()
+                .await
+            {
+                Ok(stream) => stream
+                    .filter_map(|res| futures::future::ready(res.ok()))
+                    .collect()
+                    .await,
+                Err(e) => {
+                    log_error(&format!("Scheduler push query failed: {}", e));
+                    Vec::new()
+                }
+            };
+
+            for doc in push_docs {
+                let doc_map = match doc.as_object() {
+                    Some(m) => m,
+                    None => continue,
+                };
+                let scheduled_send_time = doc_map
+                    .get("scheduledSendTime")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let doc_id = doc_map.get("id").and_then(|v| v.as_str());
+                let booking_id = doc_map
+                    .get("bookingId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let send_time_utc: DateTime<Utc> = match scheduled_send_time.parse() {
+                    Ok(dt) => dt,
+                    Err(_) => continue,
+                };
+                if send_time_utc > now_utc + chrono::Duration::minutes(1) {
+                    continue;
+                }
+                if send_time_utc < now_utc - chrono::Duration::minutes(2) {
+                    continue;
+                }
+
+                if !booking_id.is_empty() {
+                    let booking: FirestoreResult<Option<serde_json::Value>> = state
+                        .db
+                        .fluent()
+                        .select()
+                        .by_id_in("bookings")
+                        .obj()
+                        .one(booking_id)
+                        .await;
+                    let status = booking
+                        .ok()
+                        .flatten()
+                        .and_then(|b| b.get("status").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                        .unwrap_or_default();
+                    if status == "cancelled" {
+                        log_skip(&format!("Booking {} cancelled, skipping push reminder", booking_id));
+                        continue;
+                    }
+                }
+
+                let mut fcm_token = doc_map
+                    .get("fcmToken")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if fcm_token.is_empty() {
+                    let user_id = doc_map.get("userId").and_then(|v| v.as_str()).unwrap_or("");
+                    if !user_id.is_empty() {
+                        let user_doc: FirestoreResult<Option<serde_json::Value>> = state
+                            .db
+                            .fluent()
+                            .select()
+                            .by_id_in("users")
+                            .obj()
+                            .one(user_id)
+                            .await;
+                        if let Ok(Some(ud)) = user_doc {
+                            fcm_token = ud
+                                .get("fcmToken")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                        }
+                    }
+                }
+
+                let title = doc_map
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("תזכורת תור");
+                let body = doc_map
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if fcm_token.is_empty() {
+                    log_skip("Push reminder: no fcmToken, skipping");
+                    continue;
+                }
+
+                log_info(&format!(
+                    "Scheduler: sending push for booking {} (due {})",
+                    booking_id,
+                    now_israel.format("%Y-%m-%d %H:%M")
+                ));
+
+                match fcm::send_fcm_push(project_id, &fcm_token, title, body).await {
+                    Ok(_) => {
+                        log_success(&format!("Push sent for booking {}", booking_id));
+                        if let Some(id) = doc_id {
+                            let mut updated = doc.clone();
+                            if let Some(obj) = updated.as_object_mut() {
+                                obj.insert(
+                                    "status".to_string(),
+                                    serde_json::Value::String("sent".to_string()),
+                                );
+                                obj.insert(
+                                    "sentAt".to_string(),
+                                    serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+                                );
+                                let _ = state
+                                    .db
+                                    .fluent()
+                                    .update()
+                                    .in_col("scheduled_reminders")
+                                    .document_id(id)
+                                    .object(&updated)
+                                    .execute::<serde_json::Value>()
+                                    .await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log_error(&format!("Push failed for booking {}: {}", booking_id, e));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NotifyNewBookingRequest {
+    pub barber_uid: String,
+    #[allow(dead_code)]
+    pub customer_name: Option<String>,
+    pub appointment_date: String,
+    #[allow(dead_code)]
+    pub booking_id: Option<String>,
+}
+
+/// POST /notify-new-booking: send push to barber when a new appointment is booked.
+pub async fn notify_new_booking(
+    State(state): State<AppState>,
+    Json(payload): Json<NotifyNewBookingRequest>,
+) -> impl IntoResponse {
+    log_section("Notify new booking (push to barber)");
+    log_field("barber_uid:", &payload.barber_uid);
+    log_field("appointment_date:", &payload.appointment_date);
+
+    if payload.barber_uid.is_empty() {
+        log_warning("barber_uid is empty");
+        return (StatusCode::BAD_REQUEST, ());
+    }
+
+    let barber_doc: FirestoreResult<Option<serde_json::Value>> = state
+        .db
+        .fluent()
+        .select()
+        .by_id_in("barbers")
+        .obj()
+        .one(&payload.barber_uid)
+        .await;
+
+    let fcm_token = match barber_doc {
+        Ok(Some(doc)) => doc
+            .get("fcmToken")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        _ => String::new(),
+    };
+
+    if fcm_token.is_empty() {
+        log_skip("No fcmToken for barber, skipping push");
+        return (StatusCode::NOT_FOUND, ());
+    }
+
+    let project_id = match std::env::var("PROJECT_ID") {
+        Ok(id) if !id.is_empty() => id,
+        _ => {
+            log_error("PROJECT_ID is not set");
+            return (StatusCode::INTERNAL_SERVER_ERROR, ());
+        }
+    };
+
+    let title = "תור חדש";
+    let body = format!(
+        "תור חדש נקבע לתאריך {}. הכנס כדי לצפות במידע נוסף",
+        payload.appointment_date
+    );
+
+    match fcm::send_fcm_push(&project_id, &fcm_token, &title, &body).await {
+        Ok(msg_id) => {
+            log_success(&format!("Push sent to barber. message_id={}", msg_id));
+            (StatusCode::OK, ())
+        }
+        Err(e) => {
+            log_error(&format!("FCM push failed: {}", e));
+            (StatusCode::INTERNAL_SERVER_ERROR, ())
         }
     }
 }

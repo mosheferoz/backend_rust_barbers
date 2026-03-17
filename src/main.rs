@@ -11,6 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod auth;
+mod fcm;
 mod reminders;
 mod team;
 
@@ -22,6 +23,11 @@ pub struct AppState {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     dotenv().ok();
+
+    // Required by rustls 0.23 when used indirectly (e.g. by firestore/gcp). Must run before any TLS.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to set rustls crypto provider");
 
     tracing_subscriber::registry()
         .with(
@@ -46,6 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/team/delete-member", post(team::delete_member))
         .route("/team/add-member", post(team::add_team_member))
         .route("/schedule-reminder", post(reminders::schedule_reminder))
+        .route("/notify-new-booking", post(reminders::notify_new_booking))
         .route("/cancel-reminder/:id", delete(reminders::cancel_reminder))
         .route_layer(middleware::from_fn(auth::auth_middleware))
         .with_state(state);

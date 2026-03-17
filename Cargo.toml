@@ -13,8 +13,8 @@ tower-http = { version = "0.5", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenv = "0.15"
-# Adding rustls to ensure a crypto provider is available as per the docs
-rustls = "0.23"
+# rustls 0.23 requires a crypto provider; ring is the default choice
+rustls = { version = "0.23", features = ["ring"] }
 uuid = { version = "1.19.0", features = ["v4", "fast-rng"] }
 futures = "0.3.31"
 jsonwebtoken = { version = "10.2.0", features = ["use_pem", "rust_crypto"] }
@@ -24,3 +24,4 @@ lazy_static = "1.5.0"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.8"
 termcolor = "1.4"
+gcp_auth = "0.12"
