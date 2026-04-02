@@ -795,7 +795,11 @@ pub async fn start_reminder_scheduler(state: AppState) {
                     now_israel.format("%Y-%m-%d %H:%M")
                 ));
 
-                match fcm::send_fcm_push(project_id, &fcm_token, title, body).await {
+                let mut push_data = std::collections::HashMap::new();
+                push_data.insert("type".to_string(), "reminder".to_string());
+                push_data.insert("bookingId".to_string(), booking_id.to_string());
+
+                match fcm::send_fcm_push(project_id, &fcm_token, title, body, Some(push_data)).await {
                     Ok(_) => {
                         log_success(&format!("Push sent for booking {}", booking_id));
                         if let Some(id) = doc_id {
@@ -833,10 +837,10 @@ pub async fn start_reminder_scheduler(state: AppState) {
 #[derive(Debug, Deserialize)]
 pub struct NotifyNewBookingRequest {
     pub barber_uid: String,
-    #[allow(dead_code)]
     pub customer_name: Option<String>,
     pub appointment_date: String,
-    #[allow(dead_code)]
+    pub appointment_time: Option<String>,
+    pub services: Option<String>,
     pub booking_id: Option<String>,
 }
 
@@ -886,12 +890,34 @@ pub async fn notify_new_booking(
     };
 
     let title = "תור חדש";
-    let body = format!(
-        "תור חדש נקבע לתאריך {}. הכנס כדי לצפות במידע נוסף",
-        payload.appointment_date
-    );
+    let body = {
+        let name = payload.customer_name.as_deref().unwrap_or("").trim();
+        let date = &payload.appointment_date;
+        let time = payload.appointment_time.as_deref().unwrap_or("").trim();
+        let services = payload.services.as_deref().unwrap_or("").trim();
 
-    match fcm::send_fcm_push(&project_id, &fcm_token, &title, &body).await {
+        let mut parts = Vec::new();
+        if !name.is_empty() {
+            parts.push(name.to_string());
+        }
+        if !time.is_empty() {
+            parts.push(format!("{} בשעה {}", date, time));
+        } else {
+            parts.push(date.to_string());
+        }
+        if !services.is_empty() {
+            parts.push(services.to_string());
+        }
+        parts.join(" | ")
+    };
+
+    let mut data = std::collections::HashMap::new();
+    data.insert("type".to_string(), "new_booking".to_string());
+    if let Some(ref bid) = payload.booking_id {
+        data.insert("bookingId".to_string(), bid.clone());
+    }
+
+    match fcm::send_fcm_push(&project_id, &fcm_token, &title, &body, Some(data)).await {
         Ok(msg_id) => {
             log_success(&format!("Push sent to barber. message_id={}", msg_id));
             (StatusCode::OK, ())

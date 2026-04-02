@@ -2,6 +2,7 @@
 
 use reqwest::Client;
 use serde::Serialize;
+use std::collections::HashMap;
 
 const FCM_SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
 
@@ -19,12 +20,33 @@ struct FcmAndroidConfig {
 }
 
 #[derive(Serialize)]
+struct FcmApnsAps {
+    sound: String,
+}
+
+#[derive(Serialize)]
+struct FcmApnsPayload {
+    aps: FcmApnsAps,
+}
+
+#[derive(Serialize)]
+struct FcmApnsConfig {
+    payload: FcmApnsPayload,
+}
+
+#[derive(Serialize)]
 struct FcmMessage {
     token: String,
     notification: FcmNotification,
     /// Ensures Android shows notification when app is closed / dozing
     #[serde(skip_serializing_if = "Option::is_none")]
     android: Option<FcmAndroidConfig>,
+    /// Custom data payload for deep linking / navigation in the Flutter app
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<HashMap<String, String>>,
+    /// APNs config for iOS sound
+    #[serde(skip_serializing_if = "Option::is_none")]
+    apns: Option<FcmApnsConfig>,
 }
 
 #[derive(Serialize)]
@@ -49,6 +71,7 @@ pub async fn send_fcm_push(
     fcm_token: &str,
     title: &str,
     body: &str,
+    data: Option<HashMap<String, String>>,
 ) -> Result<String, String> {
     if fcm_token.is_empty() {
         return Err("FCM token is empty".to_string());
@@ -69,6 +92,14 @@ pub async fn send_fcm_push(
             },
             android: Some(FcmAndroidConfig {
                 priority: "high".to_string(),
+            }),
+            data,
+            apns: Some(FcmApnsConfig {
+                payload: FcmApnsPayload {
+                    aps: FcmApnsAps {
+                        sound: "default".to_string(),
+                    },
+                },
             }),
         },
     };

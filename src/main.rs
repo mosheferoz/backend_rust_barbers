@@ -46,6 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Start reminder scheduler (runs every 60 seconds, sends due SMS from scheduled_reminders)
     tokio::spawn(reminders::start_reminder_scheduler(state.clone()));
 
+    // Public routes
+    let public_routes = Router::new().route("/", get(health_check));
+
     // Protected routes (require authentication)
     let api_routes = Router::new()
         .route("/team/update-permissions", post(team::update_permissions))
@@ -56,9 +59,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/cancel-reminder/:id", delete(reminders::cancel_reminder))
         .route_layer(middleware::from_fn(auth::auth_middleware))
         .with_state(state);
-
-    // Public routes
-    let public_routes = Router::new().route("/", get(health_check));
 
     let cors = build_cors_layer_from_env();
 
