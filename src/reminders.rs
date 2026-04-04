@@ -799,7 +799,7 @@ pub async fn start_reminder_scheduler(state: AppState) {
                 push_data.insert("type".to_string(), "reminder".to_string());
                 push_data.insert("bookingId".to_string(), booking_id.to_string());
 
-                match fcm::send_fcm_push(project_id, &fcm_token, title, body, Some(push_data)).await {
+                match fcm::send_fcm_push(project_id, &fcm_token, title, body, Some(push_data), None).await {
                     Ok(_) => {
                         log_success(&format!("Push sent for booking {}", booking_id));
                         if let Some(id) = doc_id {
@@ -917,7 +917,7 @@ pub async fn notify_new_booking(
         data.insert("bookingId".to_string(), bid.clone());
     }
 
-    match fcm::send_fcm_push(&project_id, &fcm_token, &title, &body, Some(data)).await {
+    match fcm::send_fcm_push(&project_id, &fcm_token, &title, &body, Some(data), Some("new_booking")).await {
         Ok(msg_id) => {
             log_success(&format!("Push sent to barber. message_id={}", msg_id));
             (StatusCode::OK, ())

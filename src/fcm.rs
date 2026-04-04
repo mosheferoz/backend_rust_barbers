@@ -12,11 +12,22 @@ struct FcmNotification {
     body: String,
 }
 
+/// Android-specific notification details (sound, channel).
+#[derive(Serialize)]
+struct FcmAndroidNotification {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sound: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel_id: Option<String>,
+}
+
 /// Android-specific options. HIGH priority ensures delivery when app is in background or terminated.
 #[derive(Serialize)]
 struct FcmAndroidConfig {
     #[serde(rename = "priority")]
     priority: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notification: Option<FcmAndroidNotification>,
 }
 
 #[derive(Serialize)]
@@ -72,6 +83,7 @@ pub async fn send_fcm_push(
     title: &str,
     body: &str,
     data: Option<HashMap<String, String>>,
+    sound: Option<&str>,
 ) -> Result<String, String> {
     if fcm_token.is_empty() {
         return Err("FCM token is empty".to_string());
@@ -83,6 +95,12 @@ pub async fn send_fcm_push(
         project_id
     );
 
+    // iOS: "name.caf", Android: "name" (without extension, from res/raw/)
+    let ios_sound = sound
+        .map(|s| format!("{}.caf", s))
+        .unwrap_or_else(|| "default".to_string());
+    let android_sound = sound.map(|s| s.to_string());
+
     let payload = FcmSendRequest {
         message: FcmMessage {
             token: fcm_token.to_string(),
@@ -92,12 +110,16 @@ pub async fn send_fcm_push(
             },
             android: Some(FcmAndroidConfig {
                 priority: "high".to_string(),
+                notification: Some(FcmAndroidNotification {
+                    sound: android_sound,
+                    channel_id: Some("fademe_bookings".to_string()),
+                }),
             }),
             data,
             apns: Some(FcmApnsConfig {
                 payload: FcmApnsPayload {
                     aps: FcmApnsAps {
-                        sound: "default".to_string(),
+                        sound: ios_sound,
                     },
                 },
             }),
