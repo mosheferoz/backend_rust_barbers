@@ -6,19 +6,13 @@ use axum::{
 };
 use dotenv::dotenv;
 use firestore::*;
+use std::sync::Arc;
 use std::{net::SocketAddr, str::FromStr};
+use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-mod auth;
-mod fcm;
-mod reminders;
-mod team;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub db: FirestoreDb,
-}
+use rust_backend::{auth, opportunities, reminders, team, AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -41,13 +35,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Connecting to Firestore project: {}", project_id);
 
     let db = FirestoreDb::new(&project_id).await?;
-    let state = AppState { db };
+    let opp_stats: opportunities::scheduler::SharedStats = Arc::new(RwLock::new(
+        opportunities::scheduler::SchedulerStats::default(),
+    ));
+    let state = AppState {
+        db,
+        opp_stats: opp_stats.clone(),
+    };
 
     // Start reminder scheduler (runs every 60 seconds, sends due SMS from scheduled_reminders)
     tokio::spawn(reminders::start_reminder_scheduler(state.clone()));
 
-    // Public routes
-    let public_routes = Router::new().route("/", get(health_check));
+    // Start opportunities scheduler (hourly recompute of cached opportunities per barber)
+    if std::env::var("OPPORTUNITIES_ENABLED")
+        .unwrap_or_else(|_| "true".into())
+        .eq_ignore_ascii_case("true")
+    {
+        tokio::spawn(opportunities::scheduler::start_opportunities_scheduler(
+            state.clone(),
+        ));
+    }
+
+    // Public routes (health endpoints — no auth required, state injected for /health/opportunities)
+    let public_routes = Router::new()
+        .route("/", get(health_check))
+        .route(
+            "/health/opportunities",
+            get(opportunities::handlers::health),
+        )
+        .with_state(state.clone());
 
     // Protected routes (require authentication)
     let api_routes = Router::new()
@@ -57,6 +73,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/schedule-reminder", post(reminders::schedule_reminder))
         .route("/notify-new-booking", post(reminders::notify_new_booking))
         .route("/cancel-reminder/:id", delete(reminders::cancel_reminder))
+        .route(
+            "/opportunities/recompute",
+            post(opportunities::handlers::recompute),
+        )
+        .route(
+            "/opportunities/status",
+            get(opportunities::handlers::status),
+        )
         .route_layer(middleware::from_fn(auth::auth_middleware))
         .with_state(state);
 
@@ -64,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let app = Router::new()
         .merge(public_routes)
-        .merge(api_routes)
+        .nest("/api", api_routes)
         .layer(cors);
 
     let addr = bind_addr_from_env().unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8080)));

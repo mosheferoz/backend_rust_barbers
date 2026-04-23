@@ -41,7 +41,7 @@ pub struct GenericResponse {
 }
 
 // Helper to check if user can manage team
-async fn check_manage_team_permission(claims: &Claims, state: &AppState) -> bool {
+pub async fn check_manage_team_permission(claims: &Claims, state: &AppState) -> bool {
     // 1. Check custom claim (set by admin or Function)
     if claims.has_permission("manageTeam") {
         return true;

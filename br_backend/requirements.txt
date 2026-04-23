@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+requests
+python-dotenv
+Pillow
+python-multipart
+cachetools
+google-auth
+python-jose[cryptography]
