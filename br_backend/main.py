@@ -388,6 +388,10 @@ def onboarding_import(username: str, uid: str = Depends(verify_firebase_token)):
         f"{BASE_URL}/info", params={"id_or_username": username}, headers=HEADERS
     )
     if info_resp.status_code != 200:
+        print(
+            f"[onboarding_import] /info {info_resp.status_code} for {username}: "
+            f"{info_resp.text[:300]}"
+        )
         raise HTTPException(status_code=502, detail="Failed to fetch Instagram profile")
 
     info_data = info_resp.json()
